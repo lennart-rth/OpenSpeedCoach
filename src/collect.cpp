@@ -9,10 +9,10 @@
 
 // --- CONFIGURATION ---
 const int LOG_INTERVAL_MS = 20000; // Update Display/SD every 20s
-const int IMU_INTERVAL_MS = 25;    // 40Hz = 1000ms / 25ms
+const int IMU_INTERVAL_MS = 20;    // 50Hz = 1000ms / 20ms
 
 // Max buffers for 20 seconds of data
-const int MAX_IMU_SAMPLES = 850;   // 20s * 40Hz = 800 (added margin)
+const int MAX_IMU_SAMPLES = 1050;   // 20s * 50Hz = 800 (added margin)
 const int MAX_GPS_SAMPLES = 25;    // 20s * 1Hz = 20 (added margin)
 
 // --- PINS (Kept from your code) ---
