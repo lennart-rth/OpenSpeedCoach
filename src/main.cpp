@@ -10,7 +10,6 @@
 // --- CONFIGURATION ---
 const int BUFFER_SIZE = 20;      
 const int AVG_WINDOW = 10;       
-const unsigned long UI_REFRESH_SETUP = 15000; 
 
 // --- PINS ---
 #define SD_CS    PIN_020 
@@ -56,7 +55,6 @@ char logFileName[16] = "temp.csv";
 
 double totalDist = 0.0;
 unsigned long startTime = 0;
-double startLat = 0, startLon = 0;
 double lastLat = 0, lastLon = 0;
 
 
@@ -103,7 +101,7 @@ void drawIcons(int sats) {
   if (mpuOK) {
     display.drawRect(gyroX, topY, 12, 12, GxEPD_BLACK);     // Outer Box
     display.drawRect(gyroX+4, topY+4, 4, 4, GxEPD_BLACK);   // Inner Box
-    display.drawLine(gyroX+6, topY, gyroX+6, topY+2, GxEPD_BLACK);   // Top Pin
+    display.drawLine(gyroX:q+6, topY, gyroX+6, topY+2, GxEPD_BLACK);   // Top Pin
     display.drawLine(gyroX+6, topY+10, gyroX+6, topY+12, GxEPD_BLACK); // Bottom Pin
     display.drawLine(gyroX, topY+6, gyroX+2, topY+6, GxEPD_BLACK);     // Left Pin
     display.drawLine(gyroX+10, topY+6, gyroX+12, topY+6, GxEPD_BLACK); // Right Pin
