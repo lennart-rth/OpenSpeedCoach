@@ -1,49 +1,62 @@
 #include <Arduino.h>
 #include <GxEPD2_BW.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_TinyUSB.h>
 #include <SPI.h>
 #include <SdFat.h>
 #include <Adafruit_MPU6050.h>
 #include <TinyGPSPlus.h>
+#include <Wire.h>
 
 // --- CONFIGURATION ---
-const int BUFFER_SIZE = 20;      
-const int AVG_WINDOW = 10;       
+const int LOG_INTERVAL_MS = 20000; // Update Display/SD every 20s
+const int IMU_INTERVAL_MS = 20;    // 50Hz = 1000ms / 20ms
 
-// --- PINS ---
-#define SD_CS    PIN_020 
+// Max buffers for 20 seconds of data
+const int MAX_IMU_SAMPLES = 1050;   // 20s * 50Hz = 800 (added margin)
+const int MAX_GPS_SAMPLES = 25;    // 20s * 1Hz = 20 (added margin)
+
+// --- PINS (Kept from your code) ---
+#define SD_CS    PIN_020
 #define EPD_CS   PIN_024
 #define EPD_DC   PIN_022
 #define EPD_RST  PIN_104
-#define EPD_BUSY PIN_106 
+#define EPD_BUSY PIN_106
 #define PIN_MISO PIN_017
 #define PIN_MOSI PIN_011
 #define PIN_SCK  PIN_100
 #define MPU_SDA  PIN_029
-#define MPU_SCL  PIN_031 
+#define MPU_SCL  PIN_031
 #define GPS_RX_PIN PIN_115
-#define GPS_TX_PIN PIN_002 
+#define GPS_TX_PIN PIN_002
 
 // --- DATA STRUCTURES ---
-struct RowData {
-  unsigned long time;
-  double lat;
-  double lon;
-  float speed;      
-  float distToStart;
-  int sats;
+struct ImuData {
+  uint32_t timestamp;
+  int16_t ax, ay, az;
+  int16_t gx, gy, gz;
 };
 
-RowData dataBuffer[BUFFER_SIZE];
-int bufferIndex = 0;
+struct GpsData {
+  uint32_t timestamp;
+  double lat;
+  double lon;
+  float speed;
+  float distToStart;
+  uint8_t sats;
+};
+
+// --- BUFFERS ---
+ImuData imuBuffer[MAX_IMU_SAMPLES];
+GpsData gpsBuffer[MAX_GPS_SAMPLES];
+int imuCount = 0;
+int gpsCount = 0;
 
 // --- OBJECTS ---
-// NOTE: If rotation is still wrong, try changing '3' to '0' or '2' in setup()
 GxEPD2_BW<GxEPD2_270, GxEPD2_270::HEIGHT> display(GxEPD2_270(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 SdFat sd;
-File32 myFile; 
+File32 myFile;
 Adafruit_MPU6050 mpu;
+// Initializing Wire explicitly for nRF52 if needed, otherwise standard Wire works
 TwoWire MyWire = TwoWire(NRF_TWIM1, NRF_TWIS1, SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1_IRQn, MPU_SDA, MPU_SCL);
 TinyGPSPlus gps;
 
@@ -51,174 +64,152 @@ TinyGPSPlus gps;
 bool sdOK = false;
 bool mpuOK = false;
 bool fixFound = false;
-char logFileName[16] = "temp.csv"; 
+char logFileName[16] = "temp.csv";
+String errorMessage = ""; // Holds runtime errors
 
+double startLat = 0, startLon = 0;
+double lastLat = 0, lastLon = 0;
 double totalDist = 0.0;
 unsigned long startTime = 0;
-double lastLat = 0, lastLon = 0;
+unsigned long lastLogTime = 0;
+unsigned long lastImuTime = 0;
 
+// --- HELPER FUNCTIONS ---
 
-// --- DRAWING HELPERS ---
-
-void drawIcons(int sats) {
-  // Fixed positions for the top right corner
-  int topY = 4; 
-  int rightEdge = display.width() - 2; // Rightmost pixel
-  
-  // --- 1. GPS BARS (Far Right) ---
-  // Bars are 3px wide, spaced 2px apart.
-  // 4 Bars total.
-  // X positions: rightEdge - 20, -15, -10, -5
-  
-  int barsFilled = 0;
-  if (sats > 3) barsFilled = 1;
-  if (sats > 5) barsFilled = 2;
-  if (sats > 7) barsFilled = 3;
-  if (sats > 9) barsFilled = 4;
-
-  for(int i=0; i<4; i++) {
-    int h = (i+1)*3; // Heights: 3, 6, 9, 12
-    int x = rightEdge - 18 + (i*5);
-    int y = topY + (12 - h);
-    
-    // Always draw the Outline (Hollow)
-    display.drawRect(x, y, 3, h, GxEPD_BLACK);
-    
-    // If signal is strong enough, Fill it
-    if (i < barsFilled) {
-      display.fillRect(x, y, 3, h, GxEPD_BLACK);
-    }
-  }
-  
-  // Sat Count (Small number to the left of bars)
-  display.setTextSize(1);
-  display.setCursor(rightEdge - 30, topY + 4);
-  display.print(sats);
-
-  // --- 2. GYRO ICON (Middle) ---
-  // A "Chip" symbol: Square with a crosshair
-  int gyroX = rightEdge - 50;
-  if (mpuOK) {
-    display.drawRect(gyroX, topY, 12, 12, GxEPD_BLACK);     // Outer Box
-    display.drawRect(gyroX+4, topY+4, 4, 4, GxEPD_BLACK);   // Inner Box
-    display.drawLine(gyroX:q+6, topY, gyroX+6, topY+2, GxEPD_BLACK);   // Top Pin
-    display.drawLine(gyroX+6, topY+10, gyroX+6, topY+12, GxEPD_BLACK); // Bottom Pin
-    display.drawLine(gyroX, topY+6, gyroX+2, topY+6, GxEPD_BLACK);     // Left Pin
-    display.drawLine(gyroX+10, topY+6, gyroX+12, topY+6, GxEPD_BLACK); // Right Pin
-  } else {
-    // Cross out if missing
-    display.drawRect(gyroX, topY, 12, 12, GxEPD_BLACK);
-    display.drawLine(gyroX, topY, gyroX+12, topY+12, GxEPD_BLACK); 
-  }
-
-  // --- 3. SD CARD ICON (Left) ---
-  // Shape: Rectangle with notched top-right corner
-  int sdX = rightEdge - 70;
-  if (sdOK) {
-    // Main Body
-    display.drawRect(sdX, topY+2, 11, 10, GxEPD_BLACK); // Bottom part
-    display.drawLine(sdX, topY+2, sdX, topY, GxEPD_BLACK); // Left wall up
-    display.drawLine(sdX, topY, sdX+7, topY, GxEPD_BLACK); // Top wall
-    display.drawLine(sdX+7, topY, sdX+10, topY+3, GxEPD_BLACK); // Diagonal notch
-    
-    // Contacts (Pins)
-    display.fillRect(sdX+2, topY+9, 2, 2, GxEPD_BLACK);
-    display.fillRect(sdX+5, topY+9, 2, 2, GxEPD_BLACK);
-    display.fillRect(sdX+8, topY+9, 2, 2, GxEPD_BLACK);
-  } else {
-    display.setCursor(sdX, topY+4);
-    display.print("!SD");
-  }
+void logError(String msg) {
+  errorMessage = msg;
+  Serial.println(msg);
 }
 
-void drawMainScreen(int hour, int minute, float avgSpeed10s, float totalDist, float totalTimeMin) {
+// Draw the Setup Screen
+void drawSetupScreen(String timeStr) {
   display.setFullWindow();
   display.firstPage();
   do {
     display.fillScreen(GxEPD_WHITE);
     display.setTextColor(GxEPD_BLACK);
 
-    // --- HEADER (Fixed Height: 24px) ---
-    // Divider Line (Further up now)
-    int headerH = 24;
-    display.drawLine(0, headerH, display.width(), headerH, GxEPD_BLACK);
-
-    // Time (Top Left)
+    // Title
+    display.setCursor(5, 30);
     display.setTextSize(2);
-    display.setCursor(2, 4); // Tucked in top-left
-    if(hour < 10) display.print("0");
-    display.print(hour);
-    display.print(":");
-    if(minute < 10) display.print("0");
-    display.print(minute);
+    display.print("OpenSpeedCoach");
 
-    // Icons (Top Right)
-    drawIcons(gps.satellites.value());
+    // Time (Medium Large)
+    display.setCursor(5, 60);
+    display.setTextSize(3);
+    display.print(timeStr);
 
-    // --- GRID LAYOUT ---
-    // Calculate space remaining below header
-    int contentH = display.height() - headerH;
-    int midY = headerH + (contentH / 2);
-    int midX = display.width() / 2;
+    // Component Status (Small)
+    display.setTextSize(1);
+    display.setCursor(5, 90);
+    display.print("SD Card: "); 
+    if(sdOK) display.print("OK"); else display.print("ERROR");
 
-    // Grid Lines
-    display.drawLine(midX, headerH, midX, display.height(), GxEPD_BLACK); // Vertical Center
-    display.drawLine(0, midY, display.width(), midY, GxEPD_BLACK);        // Horizontal Center
+    display.setCursor(5, 105);
+    display.print("Accelerometer: ");
+    if(mpuOK) display.print("OK"); else display.print("ERROR");
 
-    // --- QUADRANT 1: AVG SPEED (Top Left) ---
-    display.setCursor(5, headerH + 5);
-    display.setTextSize(1); display.println("AVG (10s)");
-    
-    display.setCursor(5, headerH + 20);
-    display.setTextSize(3); display.print(avgSpeed10s, 1);
-    display.setTextSize(1); display.print(" km/h");
-
-    // --- QUADRANT 2: STROKE RATE (Top Right) ---
-    display.setCursor(midX + 5, headerH + 5);
-    display.setTextSize(1); display.println("STROKE/M");
-    
-    display.setCursor(midX + 5, headerH + 20);
-    display.setTextSize(3); display.print("0.0"); // Dummy
-    display.setTextSize(1); display.print(" s/m");
-
-    // --- QUADRANT 3: DISTANCE (Bottom Left) ---
-    display.setCursor(5, midY + 5);
-    display.setTextSize(1); display.println("DIST");
-    
-    display.setCursor(5, midY + 20);
-    display.setTextSize(3); display.print((int)totalDist);
-    display.setTextSize(1); display.print(" m");
-
-    // --- QUADRANT 4: TIME (Bottom Right) ---
-    display.setCursor(midX + 5, midY + 5);
-    display.setTextSize(1); display.println("TIME");
-    
-    display.setCursor(midX + 5, midY + 20);
-    display.setTextSize(3); display.print((int)totalTimeMin);
-    display.setTextSize(1); display.print(" min");
+    // Bottom Status
+    display.setCursor(5, 140);
+    display.setTextSize(2);
+    display.print("Find Satellite");
+    display.setCursor(5, 160);
+    display.print("Lock...");
 
   } while (display.nextPage());
 }
 
-void flushBufferToSD() {
-  if (!sdOK) return;
-  if (myFile.open(logFileName, O_RDWR | O_CREAT | O_AT_END)) {
-    for (int i = 0; i < BUFFER_SIZE; i++) {
-      myFile.print(dataBuffer[i].time); myFile.print(",");
-      myFile.print(dataBuffer[i].lat, 6); myFile.print(",");
-      myFile.print(dataBuffer[i].lon, 6); myFile.print(",");
-      myFile.print(dataBuffer[i].speed); myFile.print(",");
-      myFile.print(dataBuffer[i].distToStart); myFile.print(",");
-      myFile.println(dataBuffer[i].sats);
+// Draw Main Loop Screen
+void drawMainScreen(float avgSpeed, float dist, float minutes, int sats) {
+  display.setFullWindow();
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+
+    // 1. Top Bar: Error Message (if any) or Sats
+    display.setCursor(2, 10);
+    display.setTextSize(1);
+    if(errorMessage != "") {
+      display.print("ERR: "); display.print(errorMessage);
+    } else {
+      display.print("Sats: "); display.print(sats);
+      if (sdOK) display.print(" SD:Rec");
     }
+
+    // 2. Main Speed (Avg last 10s)
+    display.drawLine(0, 15, display.width(), 15, GxEPD_BLACK);
+    
+    display.setCursor(5, 30);
+    display.setTextSize(2);
+    display.print("AVG SPEED (10s)");
+
+    display.setCursor(10, 80);
+    display.setTextSize(5); // Big text
+    display.print(avgSpeed, 1);
+    display.setTextSize(2);
+    display.print(" km/h");
+
+    // 3. Bottom Stats: Distance and Time
+    display.drawLine(0, 100, display.width(), 100, GxEPD_BLACK);
+    
+    // Dist
+    display.setCursor(5, 120);
+    display.setTextSize(2);
+    display.print("Dist: ");
+    display.print((int)dist);
+    display.print(" m");
+
+    // Time
+    display.setCursor(5, 150);
+    display.print("Time: ");
+    display.print(minutes, 1);
+    display.print(" m");
+
+  } while (display.nextPage());
+}
+
+void flushDataToSD() {
+  if (!sdOK) return;
+
+  // Open file in append mode
+  if (myFile.open(logFileName, O_RDWR | O_CREAT | O_APPEND)) {
+    
+    // Write GPS Chunk
+    for (int i = 0; i < gpsCount; i++) {
+      myFile.print("GPS,");
+      myFile.print(gpsBuffer[i].timestamp); myFile.print(",");
+      myFile.print(gpsBuffer[i].lat, 6); myFile.print(",");
+      myFile.print(gpsBuffer[i].lon, 6); myFile.print(",");
+      myFile.print(gpsBuffer[i].speed); myFile.print(",");
+      myFile.print(gpsBuffer[i].distToStart); myFile.print(",");
+      myFile.println(gpsBuffer[i].sats);
+    }
+
+    // Write IMU Chunk
+    for (int i = 0; i < imuCount; i++) {
+      myFile.print("IMU,");
+      myFile.print(imuBuffer[i].timestamp); myFile.print(",");
+      myFile.print(imuBuffer[i].ax); myFile.print(",");
+      myFile.print(imuBuffer[i].ay); myFile.print(",");
+      myFile.print(imuBuffer[i].az); myFile.print(",");
+      myFile.print(imuBuffer[i].gx); myFile.print(",");
+      myFile.print(imuBuffer[i].gy); myFile.print(",");
+      myFile.println(imuBuffer[i].gz);
+    }
+    
     myFile.close();
+  } else {
+    logError("SD Write Fail");
+    sdOK = false; // Stop trying if it failed
   }
 }
 
 // --- SETUP ---
 void setup() {
   Serial.begin(115200);
-  
+
+  // 1. Init Hardware
   MyWire.begin();
   mpuOK = mpu.begin(MPU6050_I2CADDR_DEFAULT, &MyWire);
   if (mpuOK) {
@@ -233,13 +224,17 @@ void setup() {
   SPI.setPins(PIN_MISO, PIN_SCK, PIN_MOSI);
   sdOK = sd.begin(SD_CS, SD_SCK_MHZ(12));
 
-  display.init(115200); 
-  
-  // FIX: Rotation 3 usually sets Landscape with buttons at bottom for these HATs
-  display.setRotation(3); 
+  display.init(115200);
+  display.setRotation(3); // Adjust as needed (0-3)
 
-  // --- WAITING FOR GPS SCREEN ---
-  unsigned long lastUpdate = 0;
+  // 2. Initial Setup Screen (Time unknown yet)
+  drawSetupScreen("--:--");
+
+  // 3. Wait for Lock
+  // We loop here until we have a valid location. 
+  // We can update the time on screen if we get time packets before location lock.
+  
+  unsigned long lastScreenUpdate = 0;
   
   while (!fixFound) {
     while (Serial1.available() > 0) gps.encode(Serial1.read());
@@ -251,99 +246,127 @@ void setup() {
       lastLat = startLat;
       lastLon = startLon;
       startTime = millis();
-      
+      lastLogTime = millis();
+      lastImuTime = millis();
+
+      // Generate Filename
       if (sdOK) {
-        sprintf(logFileName, "%02d%02d%02d%02d.csv", 
-               gps.date.month(), gps.date.day(), 
-               gps.time.hour(), gps.time.minute());
+        sprintf(logFileName, "%02d%02d%02d%02d.csv",
+                gps.date.month(), gps.date.day(),
+                gps.time.hour(), gps.time.minute());
+        
         if (myFile.open(logFileName, O_RDWR | O_CREAT | O_AT_END)) {
-          myFile.println("Millis,Lat,Lon,Speed,DistStart,Sats");
+          myFile.println("Type,Millis,Data1,Data2,Data3,Data4,Data5,Data6");
           myFile.close();
+        } else {
+          sdOK = false;
         }
       }
-    }
-
-    // Refresh Setup Screen
-    if (millis() - lastUpdate > UI_REFRESH_SETUP && !fixFound) {
-      lastUpdate = millis();
-      display.setFullWindow();
-      display.firstPage();
-      do {
-        display.fillScreen(GxEPD_WHITE);
-        display.setTextColor(GxEPD_BLACK);
-        
-        // Header
-        display.drawLine(0, 30, display.width(), 30, GxEPD_BLACK);
-        display.setCursor(10, 20);
-        display.setTextSize(2);
-        display.print("OpenSpeedCoach");
-
-        // Status List
-        int yStart = 50;
-        int rowH = 25;
-        
-        display.setTextSize(1);
-        
-        // SD Status
-        display.setCursor(10, yStart);
-        display.print("SD Card: "); 
-        if(sdOK) display.println("OK"); else display.println("MISSING");
-
-        // MPU Status
-        display.setCursor(10, yStart + rowH);
-        display.print("Sensor:  "); 
-        if(mpuOK) display.println("OK"); else display.println("ERROR");
-
-        // GPS Status
-        display.setCursor(10, yStart + (rowH*2));
-        display.print("Sats:    "); 
-        display.print(gps.satellites.value());
-        if(gps.satellites.value() == 0) display.print(" (Search...)");
-        else display.print(" (Locking...)");
-
-      } while (display.nextPage());
+    } else {
+        // Optional: Update time on screen if changed while waiting for lock
+        if (gps.time.isUpdated() && millis() - lastScreenUpdate > 60000) {
+           char timeBuf[10];
+           sprintf(timeBuf, "%02d:%02d", gps.time.hour(), gps.time.minute());
+           drawSetupScreen(String(timeBuf));
+           lastScreenUpdate = millis();
+        }
     }
   }
 }
 
 // --- MAIN LOOP ---
 void loop() {
-  while (Serial1.available() > 0) gps.encode(Serial1.read());
+  unsigned long currentMillis = millis();
 
-  if (gps.location.isUpdated()) {
-    
-    double distStep = gps.distanceBetween(gps.location.lat(), gps.location.lng(), lastLat, lastLon);
-    if (distStep > 2.0) {
-      totalDist += distStep;
-      lastLat = gps.location.lat();
-      lastLon = gps.location.lng();
-    }
+  // 1. Process GPS Raw Data (Continuous)
+  while (Serial1.available() > 0) {
+    if (gps.encode(Serial1.read())) {
+      // If we have a new location fix
+      if (gps.location.isValid()) {
+        // Calculate Distance Accumulation
+        double distStep = gps.distanceBetween(gps.location.lat(), gps.location.lng(), lastLat, lastLon);
+        // Noise filter: only add if moved > 1.0 meter
+        if (distStep > 1.0) {
+          totalDist += distStep;
+          lastLat = gps.location.lat();
+          lastLon = gps.location.lng();
+        }
 
-    if (bufferIndex < BUFFER_SIZE) {
-      dataBuffer[bufferIndex].time = millis();
-      dataBuffer[bufferIndex].lat = gps.location.lat();
-      dataBuffer[bufferIndex].lon = gps.location.lng();
-      dataBuffer[bufferIndex].speed = gps.speed.kmph();
-      dataBuffer[bufferIndex].distToStart = gps.distanceBetween(gps.location.lat(), gps.location.lng(), startLat, startLon);
-      dataBuffer[bufferIndex].sats = gps.satellites.value();
-      bufferIndex++;
-    }
-
-    if (bufferIndex >= BUFFER_SIZE) {
-      float sumSpeed = 0;
-      int count = 0;
-      for (int i = BUFFER_SIZE - AVG_WINDOW; i < BUFFER_SIZE; i++) {
-        if (i >= 0) {
-          sumSpeed += dataBuffer[i].speed;
-          count++;
+        // Add to Buffer (Low Speed 1Hz)
+        if (gpsCount < MAX_GPS_SAMPLES) {
+          gpsBuffer[gpsCount].timestamp = millis();
+          gpsBuffer[gpsCount].lat = gps.location.lat();
+          gpsBuffer[gpsCount].lon = gps.location.lng();
+          gpsBuffer[gpsCount].speed = gps.speed.kmph();
+          gpsBuffer[gpsCount].distToStart = gps.distanceBetween(gps.location.lat(), gps.location.lng(), startLat, startLon);
+          gpsBuffer[gpsCount].sats = gps.satellites.value();
+          gpsCount++;
         }
       }
-      float avgSpeed10s = (count > 0) ? (sumSpeed / count) : 0.0;
-      float totalTimeMin = (millis() - startTime) / 60000.0;
-
-      flushBufferToSD();
-      drawMainScreen(gps.time.hour(), gps.time.minute(), avgSpeed10s, totalDist, totalTimeMin);
-      bufferIndex = 0;
     }
+  }
+
+  // 2. Process IMU Data (40Hz Timer)
+  if (currentMillis - lastImuTime >= IMU_INTERVAL_MS) {
+    lastImuTime = currentMillis;
+    
+    if (mpuOK && imuCount < MAX_IMU_SAMPLES) {
+      sensors_event_t a, g, temp;
+      mpu.getEvent(&a, &g, &temp);
+
+      // Store raw values to save processing time/storage space
+      // You can convert to float later during data analysis
+      // MPU raw values are usually accessible, but Adafruit library gives floats.
+      // We will cast floats to int16 for compactness if we accessed registers directly,
+      // but here we just cast the float * 100 or keep it simple. 
+      // Let's store the float values in the struct but simplified. 
+      // Actually, Adafruit MPU getEvent returns floats (m/s^2). 
+      // To save RAM/SD Speed, let's just store the integer part * 100 or similar? 
+      // For now, let's keep the struct logic simple:
+      
+      imuBuffer[imuCount].timestamp = currentMillis;
+      imuBuffer[imuCount].ax = (int16_t)(a.acceleration.x * 100);
+      imuBuffer[imuCount].ay = (int16_t)(a.acceleration.y * 100);
+      imuBuffer[imuCount].az = (int16_t)(a.acceleration.z * 100);
+      imuBuffer[imuCount].gx = (int16_t)(g.gyro.x * 100);
+      imuBuffer[imuCount].gy = (int16_t)(g.gyro.y * 100);
+      imuBuffer[imuCount].gz = (int16_t)(g.gyro.z * 100);
+      imuCount++;
+    }
+  }
+
+  // 3. Process Display & Log (20s Timer)
+  if (currentMillis - lastLogTime >= LOG_INTERVAL_MS) {
+    lastLogTime = currentMillis;
+
+    // A. Calculate Averages
+    // We want the average speed of the LAST 10 SECONDS.
+    // Since gpsCount contains ~20 seconds of data, we look at the second half of the array.
+    float speedSum = 0;
+    int speedSamples = 0;
+    
+    // We iterate backwards from the current end of buffer
+    unsigned long cutoffTime = currentMillis - 10000; 
+
+    for (int i = 0; i < gpsCount; i++) {
+      if (gpsBuffer[i].timestamp >= cutoffTime) {
+        speedSum += gpsBuffer[i].speed;
+        speedSamples++;
+      }
+    }
+    
+    float avgSpeed10s = (speedSamples > 0) ? (speedSum / speedSamples) : 0.0;
+    float totalTimeMin = (currentMillis - startTime) / 60000.0;
+
+    // B. Update Display
+    // Note: E-paper update blocks for ~2 seconds. No IMU data collected during this time.
+    drawMainScreen(avgSpeed10s, totalDist, totalTimeMin, gps.satellites.value());
+
+    // C. Flush to SD
+    flushDataToSD();
+
+    // D. Reset Buffers
+    imuCount = 0;
+    gpsCount = 0;
   }
 }
