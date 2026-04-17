@@ -2,10 +2,9 @@ import csv
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
-from scipy.signal import butter, sosfilt
 
 # --- CONFIGURATION ---
-CSV_FILE = '10070830.csv'  # REPLACE with your filename
+CSV_FILE = 'data/04161551.csv'  # REPLACE with your filename
 FS = 50                    # Sampling Frequency (Hz)
 
 # ==========================================
@@ -13,15 +12,24 @@ FS = 50                    # Sampling Frequency (Hz)
 # ==========================================
 
 class LowPassFilter:
-    def __init__(self, cutoff, fs, order=2):
-        nyq = 0.5 * fs
-        normal_cutoff = cutoff / nyq
-        self.sos = butter(order, normal_cutoff, btype='low', analog=False, output='sos')
-        self.z = np.zeros((self.sos.shape[0], 2))
+    """
+    A simple Alpha-Filter (Exponential Moving Average) 
+    replacing Scipy's butter/sosfilt.
+    """
+    def __init__(self, cutoff, fs):
+        # Calculate alpha based on the desired cutoff frequency
+        # Time constant tau = 1 / (2 * pi * cutoff)
+        # alpha = dt / (tau + dt)
+        dt = 1.0 / fs
+        tau = 1.0 / (2 * np.pi * cutoff)
+        self.alpha = dt / (tau + dt)
+        self.last_y = 0.0
         
     def step(self, x):
-        y, self.z = sosfilt(self.sos, [x], zi=self.z)
-        return y[0]
+        # Y[n] = alpha * X[n] + (1 - alpha) * Y[n-1]
+        y = self.alpha * x + (1 - self.alpha) * self.last_y
+        self.last_y = y
+        return y
 
 class StrokeDetector:
     def __init__(self, fs, min_spm=15, max_spm=60):

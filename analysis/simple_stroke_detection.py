@@ -2,26 +2,34 @@ import csv
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
-from scipy.signal import butter, sosfilt
 
 # --- CONFIGURATION ---
-CSV_FILE = '10070830.csv'  # REPLACE with your filename
-FS = 50                    # Sampling Frequency (Hz)
+CSV_FILE = 'data/04161551.csv'  # REPLACE with your filename
+FS = 50                         # Sampling Frequency (Hz)
 
 # ==========================================
 # PART 1: Helper Classes (Filter & Detector)
 # ==========================================
 
 class LowPassFilter:
-    def __init__(self, cutoff, fs, order=2):
-        nyq = 0.5 * fs
-        normal_cutoff = cutoff / nyq
-        self.sos = butter(order, normal_cutoff, btype='low', analog=False, output='sos')
-        self.z = np.zeros((self.sos.shape[0], 2))
+    """
+    A simple Alpha-Filter (Exponential Moving Average) 
+    replacing Scipy's butter/sosfilt.
+    """
+    def __init__(self, cutoff, fs):
+        # Calculate alpha based on the desired cutoff frequency
+        # Time constant tau = 1 / (2 * pi * cutoff)
+        # alpha = dt / (tau + dt)
+        dt = 1.0 / fs
+        tau = 1.0 / (2 * np.pi * cutoff)
+        self.alpha = dt / (tau + dt)
+        self.last_y = 0.0
         
     def step(self, x):
-        y, self.z = sosfilt(self.sos, [x], zi=self.z)
-        return y[0]
+        # Y[n] = alpha * X[n] + (1 - alpha) * Y[n-1]
+        y = self.alpha * x + (1 - self.alpha) * self.last_y
+        self.last_y = y
+        return y
 
 class StrokeDetector:
     def __init__(self, fs, min_spm=15, max_spm=60):
@@ -42,7 +50,8 @@ class StrokeDetector:
         if (y_prev > y_old) and (y_prev > y_now): # Local Max
             if (timestamp - self.last_peak_time) > self.min_interval_ms:
                 # Dynamic Threshold: Mean + 0.5 * StdDev
-                threshold = np.mean(list(self.val_buffer)) + 0.5 * np.std(list(self.val_buffer))
+                vals = list(self.val_buffer)
+                threshold = np.mean(vals) + 0.5 * np.std(vals)
                 
                 if y_prev > threshold:
                     if self.last_peak_time > 0:
@@ -60,13 +69,14 @@ class StrokeDetector:
 # ==========================================
 
 def run_simple_analysis(filename):
+    # Using the same 3.0Hz cutoff as before
     lpf = LowPassFilter(cutoff=3.0, fs=FS)
     detector = StrokeDetector(fs=FS)
     
     timestamps = []
     spm_values = []
     
-    print(f"--- Running SIMPLE Method on {filename} ---")
+    print(f"--- Running SIMPLE Method (No SciPy) on {filename} ---")
     
     try:
         with open(filename, 'r') as f:
@@ -80,12 +90,11 @@ def run_simple_analysis(filename):
                     ay = float(row[3]) / 100.0
                     az = float(row[4]) / 100.0
                     
-                    # --- CORE LOGIC ---
                     # 1. Magnitude
                     mag = np.sqrt(ax**2 + ay**2 + az**2)
                     # 2. Remove Gravity (approx)
                     mag -= 9.81
-                    # 3. Filter
+                    # 3. Filter (Now using our custom LPF)
                     filt_mag = lpf.step(mag)
                     # 4. Detect
                     spm = detector.update(ts, filt_mag)
@@ -102,14 +111,14 @@ def run_simple_analysis(filename):
     if timestamps:
         t_sec = (np.array(timestamps) - timestamps[0]) / 1000.0
         plt.figure(figsize=(10, 5))
-        plt.plot(t_sec, spm_values, label='Simple Magnitude', color='blue')
-        plt.title('Stroke Rate (Simple Method)')
+        plt.plot(t_sec, spm_values, label='Simple Magnitude (Alpha-Filter)', color='green')
+        plt.title('Stroke Rate (No SciPy Required)')
         plt.xlabel('Time (s)')
         plt.ylabel('SPM')
         plt.grid(True)
         plt.legend()
-        plt.savefig('graph_simple.png')
-        print("Graph saved as graph_simple.png")
+        plt.savefig('graph_simple_nosci.png')
+        print("Graph saved as graph_simple_nosci.png")
         plt.show()
 
 if __name__ == "__main__":
