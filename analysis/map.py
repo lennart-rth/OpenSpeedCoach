@@ -1,89 +1,88 @@
-import csv
-import numpy as np
-import matplotlib.pyplot as plt
+import pandas as pd
+import plotly.graph_objects as go
 
-# --- CONFIGURATION ---
-CSV_FILE = 'data/athome.csv'
-
-def plot_gps_session(filename):
-    ts_ms = []
-    lats = []
-    lons = []
-    speeds = []
-    sats = []
-
-    print(f"Reading GPS data from {filename}...")
+def plot_gps_data(file_path):
+    # 1. Parse the custom CSV format to extract only GPS data
+    gps_records = []
     
-    try:
-        with open(filename, 'r') as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if not row or row[0] != 'GPS': continue
-                try:
-                    # GPS,Millis,Lat,Lon,Speed,DistToStart,Sats
-                    ts_ms.append(int(row[1]))
-                    lats.append(float(row[2]))
-                    lons.append(float(row[3]))
-                    speeds.append(float(row[4]))
-                    sats.append(int(row[6]))
-                except (ValueError, IndexError):
+    with open(file_path, 'r') as file:
+        for line in file:
+            parts = line.strip().split(',')
+            
+            # Only process lines that start with 'GPS'
+            if parts[0] == 'GPS':
+                if len(parts) < 10 or not parts[1].isdigit():
                     continue
-    except FileNotFoundError:
-        print("File not found.")
+                
+                gps_records.append({
+                    'timestamp_ms': int(parts[1]),
+                    'lat': float(parts[2]),
+                    'lon': float(parts[3]),
+                    'speed': float(parts[4]),
+                    'satellites': int(parts[6]),
+                    'hdop': float(parts[7]),
+                    'altitude': float(parts[8]),
+                    'course': float(parts[9])
+                })
+
+    # Convert to a pandas DataFrame for easy manipulation
+    df = pd.DataFrame(gps_records)
+    
+    if df.empty:
+        print("No GPS data found in the file.")
         return
 
-    if not lats:
-        print("No GPS data found.")
-        return
+    # 2. Calculate dynamic point size
+    # We want points smaller when there are MORE satellites.
+    # Inverse relationship: size = constant / satellites. 
+    # We use .clip(lower=1) to prevent division-by-zero errors if satellites drop to 0.
+    base_marker_size = 25
+    df['point_size'] = base_marker_size / df['satellites'].clip(lower=1)
 
-    # Convert to numpy arrays
-    t_sec = (np.array(ts_ms) - ts_ms[0]) / 1000.0
-    lats = np.array(lats)
-    lons = np.array(lons)
-    speeds = np.array(speeds)
+    # 3. Build the interactive map
+    fig = go.Figure()
 
-    # --- PLOTTING ---
-    fig = plt.figure(figsize=(12, 10))
+    # Add the continuous track (line connecting the points)
+    fig.add_trace(go.Scattermapbox(
+        mode="lines",
+        lon=df['lon'],
+        lat=df['lat'],
+        line=dict(width=3, color='gray'),
+        name="GPS Track"
+    ))
 
-    # 1. THE "MAP" (Lat/Lon Scatter)
-    ax1 = plt.subplot(2, 1, 1)
-    # Plot the track line
-    ax1.plot(lons, lats, color='blue', alpha=0.5, label='Path')
-    # Use scatter to show speed intensity on the map
-    sc = ax1.scatter(lons, lats, c=speeds, cmap='jet', s=10, label='Speed Points')
-    
-    # Mark Start and End
-    ax1.plot(lons[0], lats[0], 'go', markersize=10, label='START')
-    ax1.plot(lons[-1], lats[-1], 'ro', markersize=10, label='END')
-    
-    plt.colorbar(sc, ax=ax1, label='Speed (km/h)')
-    ax1.set_title('GPS Track (Coordinate Map)')
-    ax1.set_xlabel('Longitude')
-    ax1.set_ylabel('Latitude')
-    ax1.grid(True)
-    ax1.legend()
-    # Ensure the aspect ratio is equal so the map isn't stretched
-    ax1.set_aspect('equal', 'datalim')
+    # Add the individual GPS points (sized by satellites, colored by speed)
+    fig.add_trace(go.Scattermapbox(
+        mode="markers",
+        lon=df['lon'],
+        lat=df['lat'],
+        marker=dict(
+            size=df['point_size'],
+            color=df['speed'],
+            colorscale='Turbo', # 'Turbo' is a great color scale for highlighting intensity (speed)
+            showscale=True,
+            colorbar=dict(title="Speed")
+        ),
+        # What to show when hovering your mouse over a point
+        text=df.apply(lambda row: f"Speed: {row['speed']} <br>Satellites: {int(row['satellites'])}", axis=1),
+        hoverinfo="text",
+        name="Data Points"
+    ))
 
-    # 2. SPEED OVER TIME
-    ax2 = plt.subplot(2, 1, 2)
-    ax2.fill_between(t_sec, speeds, color='green', alpha=0.3)
-    ax2.plot(t_sec, speeds, color='green', linewidth=1.5)
-    
-    # Calculate average speed (excluding zeros if stationary)
-    avg_speed = np.mean(speeds[speeds > 1.0]) if any(speeds > 1.0) else 0
-    ax2.axhline(avg_speed, color='red', linestyle='--', label=f'Avg Active: {avg_speed:.2f} km/h')
-    
-    ax2.set_title('Speed Profile Over Time')
-    ax2.set_xlabel('Time (s)')
-    ax2.set_ylabel('Speed (km/h)')
-    ax2.grid(True)
-    ax2.legend()
+    # 4. Configure map layout and set the starting view
+    fig.update_layout(
+        mapbox=dict(
+            style="open-street-map",
+            center=dict(lat=df['lat'].mean(), lon=df['lon'].mean()),
+            zoom=17 # Adjust this depending on how tight your tracking cluster is
+        ),
+        margin=dict(l=0, r=0, t=0, b=0), # Removes white borders
+        title="GPS Track Analysis"
+    )
 
-    plt.tight_layout()
-    plt.savefig('session_map_report.png')
-    print("\n✅ Report saved as 'session_map_report.png'")
-    plt.show()
+    # 5. Display the map in your default web browser
+    fig.show()
 
 if __name__ == "__main__":
-    plot_gps_session(CSV_FILE)
+    # Replace 'data.csv' with the actual path to your file
+    plot_gps_data('data/0423_1649.csv')

@@ -62,3 +62,14 @@ Accelerometer Data Rate: 0 Hz (It is not being written at all)
 The Catch: While your code successfully connects to the MPU6050 in the setup() function and shows an icon on the screen, you are never reading or saving its data.
 
 Your RowData structure does not contain variables for pitch, roll, or acceleration, and the flushBufferToSD() function only writes the GPS variables to the file.
+
+
+
+
+
+# TODO
+
+- add new advacned.py stroke deteciotn into the main.cpp code.
+- investigate why the pace was laggin a bit? are we smooting it? what is the pace based on? a rolling avg?
+- chnage the movement rules.  should only show strokrate if gps says we are moving. otherwise it should be 0. Dont make it too complex
+- Make a debug and error logger that catches all problems and writes them ot sd. Last time we stopped recording after about 1 lake run. Maybe see if it alwyas stoppes after the same time. Is there something overflowing?

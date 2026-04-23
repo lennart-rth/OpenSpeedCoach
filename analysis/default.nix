@@ -1,61 +1,43 @@
-with import <nixpkgs> {}; let
-  pythonPackages = python312Packages; # Change to Python 3.12
+{ pkgs ? import <nixpkgs> {} }:
+
+let
+  # This creates a Python version that has all your libraries pre-baked into it
+  myPython = pkgs.python312.withPackages (ps: with ps; [
+    scipy
+    numpy
+    pandas
+    matplotlib
+    scikit-learn
+    jupyterlab
+    notebook
+    pip
+    plotly
+  ]);
 in
-  pkgs.mkShell rec {
-    name = "impurePythonEnv";
-    venvDir = "./.venv";
-    buildInputs = [
-      pkgs.stdenv.cc.cc.lib
+pkgs.mkShell {
+  name = "science-env";
 
-      git-crypt
-      # stdenv.cc.cc # jupyter lab needs
+  buildInputs = [
+    myPython
+    pkgs.git-crypt
+    pkgs.taglib
+    pkgs.openssl
+    pkgs.git
+    pkgs.libxml2
+    pkgs.libxslt
+    pkgs.libzip
+    pkgs.zlib
+  ];
 
-      # for running jupyter lab
-      pythonPackages.jupyterlab
-      pythonPackages.notebook
+  # This helps SciPy and Matplotlib find necessary C libraries
+  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+    pkgs.stdenv.cc.cc.lib
+    pkgs.zlib
+  ];
 
-      # pythonPackages.python
-      pythonPackages.venvShellHook
-      pythonPackages.pip
-
-      pythonPackages.numpy
-      pythonPackages.pandas
-      pythonPackages.matplotlib
-
-      # sometimes you might need something additional like the following - you will get some useful error if it is looking for a binary in the environment.
-      taglib
-      openssl
-      git
-      libxml2
-      libxslt
-      libzip
-      zlib
-    ];
-
-    # Set the environment variable to the lib directory of the C compiler
-    # to get eg. matplotlib to work
-    LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
-
-    # Run this command, only after creating the virtual environment
-    postVenvCreation = ''
-      unset SOURCE_DATE_EPOCH
-
-      # pip install -r requirements.txt
-    '';
-    # for auto launching the server inlcude it up there (but there is a bug)
-    # python -m ipykernel install --user --name=myenv4 --display-name="myenv4"
-
-    shellHook = ''
-      # define stuff that should be done when entering the shell
-    '';
-
-    # Now we can execute any commands within the virtual environment.
-    # This is optional and can be left out to run pip manually.
-    postShellHook = ''
-      # allow pip to install wheels
-      unset SOURCE_DATE_EPOCH
-    '';
-
-    # run the jupyter lab in the shell with `jupyter lab`
-    # then get the url wiht the token and paste it in vscode under 'select another kernek/choose exisiting kernel'
-  }
+  shellHook = ''
+    echo "Nix Python environment loaded!"
+    echo "Python version: $(python --version)"
+    echo "SciPy location: $(python -c 'import scipy; print(scipy.__file__)' 2>/dev/null || echo 'Not found')"
+  '';
+}

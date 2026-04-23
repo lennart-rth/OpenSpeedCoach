@@ -3,11 +3,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- CONFIGURATION ---
-CSV_FILE = 'data/athome.csv'
+CSV_FILE = 'data/0423_1604.csv'
 
 def plot_sensor_intervals(filename):
     imu_timestamps = []
     gps_timestamps = []
+    gps_hdops = []
+    gps_altitudes = []
+    gps_courses = []
 
     print(f"Loading data from {filename}...")
     
@@ -26,6 +29,9 @@ def plot_sensor_intervals(filename):
                         imu_timestamps.append(ts)
                     elif sensor_type == 'GPS':
                         gps_timestamps.append(ts)
+                        gps_hdops.append(float(row[7]))
+                        gps_altitudes.append(float(row[8]))
+                        gps_courses.append(float(row[9]))
                 except ValueError:
                     continue
     except FileNotFoundError:

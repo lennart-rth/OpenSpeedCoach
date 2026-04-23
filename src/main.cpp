@@ -8,13 +8,16 @@
 #include <Wire.h>
 
 // --- CONFIGURATION ---
-const int LOG_INTERVAL_MS = 20000;     // SD Card write interval
+const int LOG_INTERVAL_MS = 10000;     // CHANGED: Write to SD card every 10 seconds
 const int DISPLAY_INTERVAL_MS = 3000;  // Display & SPM calc interval
-const int IMU_INTERVAL_MS = 10;    
+const int IMU_INTERVAL_MS = 10;        // 100Hz sampling rate
 
-const int MAX_IMU_SAMPLES = 1050;   
-const int MAX_GPS_SAMPLES = 25;    
-const int MAX_SPM_SAMPLES = 15;        // Holds ~10 SPM readings per 20s block
+// CHANGED: 10 seconds at 100Hz = 1,000 samples. 
+// We set to 1200 to give a 200-sample (2-second) safety margin!
+const int MAX_IMU_SAMPLES = 1200;    
+
+const int MAX_GPS_SAMPLES = 25;        // Holds ~10 GPS readings per 10s block
+const int MAX_SPM_SAMPLES = 15;        // Holds ~5 SPM readings per 10s block
 
 const float DEADRECONING_DISTANCE_THRESHOLD = 2; // Meters, to filter out GPS noise when stationary
 
@@ -46,6 +49,9 @@ struct GpsData {
   float speed;
   float distToStart;
   uint8_t sats;
+  float hdop;
+  float altitude;
+  float course;
 };
 
 struct SpmData {
@@ -400,7 +406,10 @@ void flushDataToSD(uint8_t bankToRead) {
       myFile.print(gpsBuffer[bankToRead][i].lon, 6); myFile.print(",");
       myFile.print(gpsBuffer[bankToRead][i].speed); myFile.print(",");
       myFile.print(gpsBuffer[bankToRead][i].distToStart); myFile.print(",");
-      myFile.println(gpsBuffer[bankToRead][i].sats);
+      myFile.print(gpsBuffer[bankToRead][i].sats); myFile.print(",");
+      myFile.print(gpsBuffer[bankToRead][i].hdop); myFile.print(",");
+      myFile.print(gpsBuffer[bankToRead][i].altitude); myFile.print(",");
+      myFile.println(gpsBuffer[bankToRead][i].course);
     }
     // 2. Write IMU Chunk
     for (int i = 0; i < imuCount[bankToRead]; i++) {
@@ -456,6 +465,9 @@ void SensorTask(void *pvParameters) {
             gpsBuffer[bank][idx].speed = gps.speed.kmph();
             gpsBuffer[bank][idx].distToStart = gps.distanceBetween(gps.location.lat(), gps.location.lng(), startLat, startLon);
             gpsBuffer[bank][idx].sats = gps.satellites.value();
+            gpsBuffer[bank][idx].hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9;
+            gpsBuffer[bank][idx].altitude = gps.altitude.isValid() ? gps.altitude.meters() : 0.0;
+            gpsBuffer[bank][idx].course = gps.course.isValid() ? gps.course.deg() : 0.0;
             gpsCount[bank]++;
           }
         }
@@ -507,7 +519,15 @@ void setup() {
   xTaskCreate(SensorTask, "Sensors", 2048, NULL, 2, &SensorTaskHandle);
 
   while (!fixFound) {
-    if (gps.location.isValid() && gps.date.year() > 2000) {
+    // 1. Is the location data populated?
+    // 2. Is the time data populated?
+    // 3. Do we have at least 5 satellites?
+    // 4. Is the HDOP (accuracy) better than 2.0?
+    if (gps.location.isValid() && 
+        gps.date.year() > 2000 && 
+        gps.satellites.isValid() && gps.satellites.value() >= 5 &&
+        gps.hdop.isValid() && gps.hdop.hdop() < 2.0) {
+
       fixFound = true;
       startLat = gps.location.lat();
       startLon = gps.location.lng();
@@ -520,7 +540,7 @@ void setup() {
       if (sdOK) {
         sprintf(logFileName, "%02d%02d_%02d%02d.csv", gps.date.month(), gps.date.day(), gps.time.hour(), gps.time.minute());
         if (myFile.open(logFileName, O_RDWR | O_CREAT | O_AT_END)) {
-          myFile.println("Type,Millis,Data1,Data2,Data3,Data4,Data5,Data6");
+          myFile.println("Type,Millis,Lat,Lon,Speed_kmh,Dist_m,Sats,HDOP,Alt_m,Course_deg");
           myFile.close();
         } else { sdOK = false; }
       }
