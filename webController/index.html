@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpeedCoach Analytics</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.0/nouislider.min.css" />
+    
+    <style>
+        :root { --primary: #0ea5e9; --danger: #ef4444; --bg: #f8fafc; --surface: #ffffff; --text: #0f172a; --border: #e2e8f0; }
+        body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 2rem; display: flex; justify-content: center; }
+        .container { background: var(--surface); padding: 2rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); width: 100%; max-width: 900px; }
+        h1 { margin-top: 0; font-size: 1.5rem; border-bottom: 2px solid var(--border); padding-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;}
+        .panel { border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+        .panel-title { font-weight: bold; margin-bottom: 1rem; color: var(--primary); display: flex; justify-content: space-between; align-items: center;}
+        
+        button { background: var(--primary); color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: bold; cursor: pointer; transition: opacity 0.2s; width: 100%; }
+        button:hover { opacity: 0.9; }
+        button:disabled { background: #cbd5e1; cursor: not-allowed; }
+        .btn-small { width: auto; padding: 0.4rem 0.8rem; font-size: 0.85rem; }
+        .btn-danger { background: var(--danger); }
+        .btn-secondary { background: #64748b; }
+        
+        .file-item { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; border-bottom: 1px solid var(--border); }
+        .file-item:last-child { border-bottom: none; }
+        .file-info { display: flex; flex-direction: column; }
+        
+        #status { text-align: center; margin-top: 1rem; font-weight: bold; color: #64748b; }
+        #downloadModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center; }
+        .modal-card { background: white; padding: 2.5rem; border-radius: 12px; width: 80%; max-width: 400px; text-align: center; }
+        progress { width: 100%; height: 12px; margin: 1rem 0 1.5rem 0; border-radius: 6px; }
+
+        /* Dashboard Elements */
+        #dashboardPanel { display: none; }
+        #map { height: 350px; width: 100%; border-radius: 8px; margin-bottom: 1.5rem; border: 1px solid var(--border); background: #e2e8f0; }
+        .chart-container { position: relative; height: 220px; width: 100%; margin-bottom: 1.5rem; }
+        
+        /* Slider Styling */
+        #timelineContainer { margin: 2rem 1rem 3rem 1rem; }
+        .noUi-connect { background: var(--primary); }
+        #timeLabel { text-align: center; font-weight: bold; margin-bottom: 10px; color: var(--text); }
+        
+        /* Grid for split charts */
+        .split-charts { display: flex; gap: 1rem; }
+        .split-charts > div { flex: 1; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>
+        SpeedCoach Connect
+        <button id="btnDisconnect" class="btn-small btn-danger" style="display: none;">Disconnect</button>
+    </h1>
+    
+    <button id="btnConnect">Pair via Bluetooth</button>
+    <div id="status">Status: Disconnected</div>
+
+    <div id="browserPanel">
+        <div class="panel" style="margin-top: 1.5rem;">
+            <div class="panel-title">SD Card Logs <div><button id="btnRefresh" class="btn-small" disabled>Refresh</button></div></div>
+            <div id="fileList"><i>Connect to device to load files...</i></div>
+        </div>
+        <div class="panel">
+            <div class="panel-title">Analyze Local File</div>
+            <input type="file" id="localFileInput" accept=".csv" style="display: none;">
+            <button id="btnLoadLocal" class="btn-secondary">Select Local .csv File</button>
+        </div>
+    </div>
+
+    <div id="dashboardPanel">
+        <div class="panel" style="margin-top: 1.5rem;">
+            <div class="panel-title">
+                Session Analysis: <span id="dashFileName">---</span>
+                <button id="btnCloseDash" class="btn-small btn-secondary">Close Session</button>
+            </div>
+            
+            <div id="map"></div>
+            
+            <div id="timelineContainer">
+                <div id="timeLabel">Select Window: 00:00 - 00:00</div>
+                <div id="slider"></div>
+            </div>
+            
+            <div class="chart-container"><canvas id="speedChart"></canvas></div>
+            <div class="chart-container"><canvas id="spmChart"></canvas></div>
+            
+            <hr style="border: 0; border-top: 1px solid var(--border); margin: 2rem 0;">
+            
+            <div class="panel-title">Advanced Stroke Analysis</div>
+            <p style="font-size: 0.85rem; color: #64748b; margin-top: -10px;">Average stroke curve based on IMU data in the selected timeframe above.</p>
+            <div class="chart-container" style="height: 250px;">
+                <canvas id="strokeProfileChart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="downloadModal">
+    <div class="modal-card">
+        <h2 id="modalTitle" style="margin-top:0; color: var(--primary);">Transferring Data</h2>
+        <p id="modalSubtitle" style="font-size: 0.9rem; color: #64748b;">Keep device close. BLE is slow!</p>
+        <div id="progressText" style="font-weight: bold; font-size: 1.2rem;">Downloading...</div>
+        <progress id="progressBar"></progress>
+        <button id="btnOpenDashboard" style="display: none; margin-bottom: 0.75rem;">View Analysis Dashboard</button>
+        <button id="btnCloseModal" class="btn-secondary" style="display: none;">Close</button>
+    </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.0/nouislider.min.js"></script>
+
+<script>
+    // --- BLE CONFIG & GLOBALS ---
+    const NUS_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+    const NUS_RX_CHAR_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; 
+    const NUS_TX_CHAR_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; 
+
+    let bleDevice, rxCharacteristic, txCharacteristic, receiveBuffer = "";
+    let isDownloading = false, downloadChunks = [], currentFileName = "";
+
+    // Global UI Elements
+    const btnConnect = document.getElementById('btnConnect');
+    const btnDisconnect = document.getElementById('btnDisconnect');
+    const statusText = document.getElementById('status');
+    const fileList = document.getElementById('fileList');
+
+    // --- SESSION DATA STORE ---
+    let sessionData = {
+        gps: [],  // { t: sec, lat, lon, pace, spm }
+        spm: [],  // { t: sec, val }
+        imu: [],  // { t: sec, x, y, z }
+        maxTime: 0
+    };
+
+    // Global Chart & Map Instances
+    let sessionMap = null, bgPolyline = null, activePolylines = [];
+    let speedChart = null, spmChart = null, strokeProfileChart = null;
+    let timeSlider = null;
+
+    // --- 1. BLUETOOTH LOGIC ---
+    btnConnect.addEventListener('click', async () => {
+        try {
+            statusText.innerText = "Status: Requesting Bluetooth Device...";
+            bleDevice = await navigator.bluetooth.requestDevice({ filters: [{ services: [NUS_SERVICE_UUID] }] });
+            bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+            const server = await bleDevice.gatt.connect();
+            const service = await server.getPrimaryService(NUS_SERVICE_UUID);
+            rxCharacteristic = await service.getCharacteristic(NUS_RX_CHAR_UUID);
+            txCharacteristic = await service.getCharacteristic(NUS_TX_CHAR_UUID);
+            await txCharacteristic.startNotifications();
+            txCharacteristic.addEventListener('characteristicvaluechanged', handleNotifications);
+
+            statusText.innerText = "Status: Connected!";
+            btnConnect.style.display = "none";
+            btnDisconnect.style.display = "block";
+            document.getElementById('btnRefresh').disabled = false;
+            sendCommand("LIST");
+        } catch (error) { statusText.innerText = "Status: Connection Failed."; }
+    });
+
+    btnDisconnect.addEventListener('click', () => { if (bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect(); });
+    function onDisconnected() {
+        statusText.innerText = "Status: Disconnected";
+        btnConnect.style.display = "block"; btnDisconnect.style.display = "none";
+        document.getElementById('btnRefresh').disabled = true;
+    }
+    async function sendCommand(cmd) {
+        // 1. Check if the device is actually connected before sending
+        if (!bleDevice || !bleDevice.gatt.connected || !rxCharacteristic) {
+            console.warn("Cannot send command, GATT is disconnected.");
+            onDisconnected(); // Force the UI to reset
+            throw new Error("Bluetooth disconnected");
+        }
+
+        try {
+            const encoder = new TextEncoder();
+            await rxCharacteristic.writeValue(encoder.encode(cmd + "\n"));
+        } catch (error) {
+            console.error("GATT Write Error:", error);
+            onDisconnected();
+            alert("Bluetooth connection lost! Please move closer to the device and reconnect.");
+            throw error;
+        }
+    }
+
+    // --- 2. LOCAL FILE & PARSING ---
+    document.getElementById('btnLoadLocal').addEventListener('click', () => document.getElementById('localFileInput').click());
+    document.getElementById('localFileInput').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            currentFileName = file.name;
+            try { analyzeData(event.target.result); } 
+            catch(err) { alert("Failed to analyze. Invalid CSV."); }
+            e.target.value = ""; 
+        };
+        reader.readAsText(file);
+    });
+
+    // --- BLE DATA HANDLER (ASCII MODE) ---
+    function handleNotifications(event) {
+        let value = event.target.value;
+        let uint8array = new Uint8Array(value.buffer);
+
+        if (isDownloading) {
+            // Decode the incoming bytes directly into a Javascript String
+            let textChunk = new TextDecoder().decode(uint8array);
+            
+            if (textChunk.includes("EOF_DOWNLOAD")) {
+                let dataPart = textChunk.split("EOF_DOWNLOAD")[0];
+                if (dataPart.length > 0) {
+                    downloadChunks.push(dataPart);
+                }
+                finishDownload();
+            } else {
+                // Store the raw text string
+                downloadChunks.push(textChunk);
+            }
+        } else {
+            // Normal command processing
+            receiveBuffer += new TextDecoder().decode(uint8array);
+            let lines = receiveBuffer.split('\n');
+            receiveBuffer = lines.pop(); 
+
+            for (let line of lines) processCommand(line.trim().replace('\r', ''));
+        }
+    }
+
+    function processCommand(cmd) {
+        if (cmd.startsWith("FILE:")) {
+            let parts = cmd.split(':');
+            if (parts.length === 3) addFileToList(parts[1], parseInt(parts[2]));
+        } else if (cmd === "LIST_DONE") { /* cleanup UI if empty */ }
+    }
+
+    function addFileToList(filename, sizeBytes) {
+        let sizeKB = (sizeBytes / 1024).toFixed(1);
+        let item = document.createElement('div');
+        item.className = "file-item";
+        item.innerHTML = `<div class="file-info"><strong>${filename}</strong><span class="file-meta">${sizeKB} KB</span></div>
+                          <button class="btn-small" onclick="startDownload('${filename}')">Download</button>`;
+        fileList.appendChild(item);
+    }
+
+    async function startDownload(filename) {
+        if (isDownloading) return;
+        
+        // 2. Pre-check the connection before we mess with the UI
+        if (!bleDevice || !bleDevice.gatt.connected) {
+            alert("Device is disconnected. Please reconnect to download.");
+            onDisconnected();
+            return;
+        }
+
+        isDownloading = true;
+        downloadChunks = [];
+        currentFileName = filename;
+        
+        downloadModal.style.display = "flex";
+        
+        document.getElementById('modalTitle').innerText = "Transferring Data";
+        document.getElementById('modalSubtitle').innerText = "Keep device close. BLE is slow!";
+        document.getElementById('progressBar').style.display = "block";
+        document.getElementById('progressText').innerText = "Downloading...";
+        
+        btnOpenDashboard.style.display = "none";
+        btnCloseModal.style.display = "none";
+        
+        // 3. Try to send the command. If it fails, catch the error and hide the modal so we don't get stuck!
+        try {
+            await sendCommand("GET_" + filename);
+        } catch (error) {
+            isDownloading = false;
+            downloadModal.style.display = "none";
+        }
+    }
+
+    // --- DOWNLOAD & ANALYZE LOGIC (ASCII MODE) ---
+    async function finishDownload() {
+        isDownloading = false;
+        document.getElementById('progressText').innerText = "Processing...";
+        
+        // 1. Stitch all the text chunks together into one massive CSV string
+        let fullCsvText = downloadChunks.join("");
+
+        // 2. Save the file to the user's computer
+        const blob = new Blob([fullCsvText], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = currentFileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        // 3. Feed the pure text directly to the Dashboard parser
+        try {
+            analyzeData(fullCsvText);
+        } catch(e) {
+            console.error("Dashboard failed to parse data:", e);
+            document.getElementById('modalSubtitle').innerText = "File saved, but analysis failed (No valid data).";
+        }
+
+        // 4. Reset the UI
+        document.getElementById('modalTitle').innerText = "Download Complete!";
+        document.getElementById('progressText').innerText = "Done!";
+        document.getElementById('progressBar').style.display = "none";
+        
+        document.getElementById('btnOpenDashboard').style.display = "block";
+        document.getElementById('btnCloseModal').style.display = "block";
+    }
+
+    document.getElementById('btnOpenDashboard').addEventListener('click', () => { document.getElementById('downloadModal').style.display = "none"; });
+    document.getElementById('btnCloseModal').addEventListener('click', () => document.getElementById('downloadModal').style.display = "none");
+
+    // --- 3. DATA PARSING (GPS, SPM, IMU) ---
+    function formatTime(seconds) {
+        let m = Math.floor(seconds / 60);
+        let s = Math.floor(seconds % 60);
+        return m + ":" + (s < 10 ? "0" : "") + s;
+    }
+    
+    function speedToPace(speedKmh) {
+        if (speedKmh < 1.0) return 300; // Cap at 5:00/500m
+        let paceSec = 1800 / speedKmh;
+        return paceSec > 300 ? 300 : paceSec;
+    }
+
+    function analyzeData(csvText) {
+        sessionData = { gps: [], spm: [], imu: [], maxTime: 0 };
+        let startMillis = -1;
+
+        // Parse lines
+        const lines = csvText.split('\n');
+        for (let line of lines) {
+            let p = line.split(',');
+            if (p.length < 3) continue;
+
+            let type = p[0];
+            let millis = parseInt(p[1]);
+            if (isNaN(millis)) continue;
+            
+            if (startMillis === -1) startMillis = millis;
+            let elapsedSec = (millis - startMillis) / 1000.0;
+            sessionData.maxTime = Math.max(sessionData.maxTime, elapsedSec);
+
+            if (type === 'GPS' && p.length >= 5) {
+                let lat = parseFloat(p[2]), lon = parseFloat(p[3]), speed = parseFloat(p[4]);
+                if (!isNaN(lat) && lat !== 0) {
+                    sessionData.gps.push({ t: elapsedSec, lat: lat, lon: lon, pace: speedToPace(speed), spm: 0 });
+                }
+            } else if (type === 'SPM' && p.length >= 3) {
+                let spmVal = parseFloat(p[2]);
+                if (!isNaN(spmVal)) sessionData.spm.push({ t: elapsedSec, val: spmVal });
+            } else if (type === 'IMU' && p.length >= 5) {
+                // Divide by 100 as per python logic
+                sessionData.imu.push({ t: elapsedSec, x: parseFloat(p[2])/100.0, y: parseFloat(p[3])/100.0, z: parseFloat(p[4])/100.0 });
+            }
+        }
+
+        // Pre-compute SPM for Map Segments (Nearest neighbor)
+        sessionData.gps.forEach(pt => {
+            let nearestSPM = 0, minDist = Infinity;
+            sessionData.spm.forEach(s => {
+                let d = Math.abs(s.t - pt.t);
+                if (d < minDist) { minDist = d; nearestSPM = s.val; }
+            });
+            pt.spm = nearestSPM;
+        });
+
+        // Setup UI
+        document.getElementById('browserPanel').style.display = "none";
+        document.getElementById('dashboardPanel').style.display = "block";
+        document.getElementById('dashFileName').innerText = currentFileName;
+
+        setupSlider();
+        drawBaseCharts();
+        updateSelection(0, sessionData.maxTime);
+    }
+
+    // --- 4. MAP & HEATMAP COLORING ---
+    function getSpmColor(spm) {
+        if (spm < 18) return '#3b82f6'; // Blue
+        if (spm < 24) return '#22c55e'; // Green
+        if (spm < 28) return '#eab308'; // Yellow
+        if (spm < 32) return '#f97316'; // Orange
+        return '#ef4444'; // Red
+    }
+
+    function updateMap(startT, endT) {
+        if (!sessionMap) {
+            sessionMap = L.map('map');
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(sessionMap);
+        }
+        
+        // Clean up
+        if (bgPolyline) sessionMap.removeLayer(bgPolyline);
+        activePolylines.forEach(p => sessionMap.removeLayer(p));
+        activePolylines = [];
+
+        // Draw light-gray background for full route
+        let fullPts = sessionData.gps.map(p => [p.lat, p.lon]);
+        if (fullPts.length > 0) {
+            bgPolyline = L.polyline(fullPts, {color: '#cbd5e1', weight: 3}).addTo(sessionMap);
+            sessionMap.fitBounds(bgPolyline.getBounds());
+        }
+
+        // Draw colored segments for selected timeframe
+        let selPts = sessionData.gps.filter(p => p.t >= startT && p.t <= endT);
+        for(let i=0; i < selPts.length - 1; i++) {
+            let color = getSpmColor(selPts[i].spm);
+            let segment = L.polyline([[selPts[i].lat, selPts[i].lon], [selPts[i+1].lat, selPts[i+1].lon]], {color: color, weight: 6}).addTo(sessionMap);
+            activePolylines.push(segment);
+        }
+    }
+
+    // --- 5. SLIDER & CHARTS ---
+    function setupSlider() {
+        if (timeSlider) { timeSlider.destroy(); }
+        let sliderDiv = document.getElementById('slider');
+        timeSlider = noUiSlider.create(sliderDiv, {
+            start: [0, sessionData.maxTime],
+            connect: true,
+            range: { 'min': 0, 'max': sessionData.maxTime }
+        });
+
+        // Debounce the heavy updates
+        let updateTimeout;
+        timeSlider.on('slide', function (values) {
+            let s = parseFloat(values[0]), e = parseFloat(values[1]);
+            document.getElementById('timeLabel').innerText = `Select Window: ${formatTime(s)} - ${formatTime(e)}`;
+            
+            // Fast Update (Charts)
+            speedChart.options.scales.x.min = s; speedChart.options.scales.x.max = e; speedChart.update();
+            spmChart.options.scales.x.min = s; spmChart.options.scales.x.max = e; spmChart.update();
+            
+            // Slow Update (IMU Math & Map) delayed by 100ms
+            clearTimeout(updateTimeout);
+            updateTimeout = setTimeout(() => updateSelection(s, e), 100);
+        });
+    }
+
+    function updateSelection(startT, endT) {
+        updateMap(startT, endT);
+        processIMUSlice(startT, endT);
+    }
+
+    function drawBaseCharts() {
+        if (speedChart) speedChart.destroy();
+        if (spmChart) spmChart.destroy();
+
+        const commonOptions = {
+            responsive: true, maintainAspectRatio: false,
+            scales: {
+                x: { type: 'linear', ticks: { callback: v => formatTime(v) } }
+            },
+            animation: false, // Turn off animation for smooth slider scrubbing
+            elements: { point: { radius: 0 } }
+        };
+
+        // SPEED (PACE) CHART
+        speedChart = new Chart(document.getElementById('speedChart').getContext('2d'), {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'Pace (/500m)',
+                    data: sessionData.gps.map(p => ({x: p.t, y: p.pace})),
+                    borderColor: '#0ea5e9', backgroundColor: 'rgba(14, 165, 233, 0.1)', fill: true, tension: 0.2
+                }]
+            },
+            options: {
+                ...commonOptions,
+                scales: {
+                    x: commonOptions.scales.x,
+                    y: { reverse: true, ticks: { callback: v => formatTime(v) } } // Inverted Y Axis for Pace!
+                },
+                plugins: { tooltip: { callbacks: { label: (ctx) => 'Pace: ' + formatTime(ctx.raw.y) + '/500m' } } }
+            }
+        });
+
+        // SPM CHART
+        spmChart = new Chart(document.getElementById('spmChart').getContext('2d'), {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'Stroke Rate (SPM)',
+                    data: sessionData.spm.map(p => ({x: p.t, y: p.val})),
+                    borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', fill: true, tension: 0.2
+                }]
+            },
+            options: commonOptions
+        });
+    }
+
+    // --- 6. ADVANCED IMU PROCESSING (PYTHON PORT) ---
+    function processIMUSlice(startT, endT) {
+        let slice = sessionData.imu.filter(d => d.t >= startT && d.t <= endT);
+        if (slice.length < 50) return drawStrokeProfile([]); // Too small
+        
+        // 1. EMA Smoothing
+        let fx=null, fy=null, fz=null;
+        let sx=[], sy=[], sz=[];
+        slice.forEach(pt => {
+            fx = (fx === null) ? pt.x : (0.3 * pt.x) + (0.7 * fx); sx.push(fx);
+            fy = (fy === null) ? pt.y : (0.3 * pt.y) + (0.7 * fy); sy.push(fy);
+            fz = (fz === null) ? pt.z : (0.3 * pt.z) + (0.7 * fz); sz.push(fz);
+        });
+
+        // 2. Dominant Axis selection for this specific slice
+        function variance(arr) {
+            let m = arr.reduce((a,b)=>a+b)/arr.length;
+            return arr.reduce((a,b)=>a+Math.pow(b-m,2), 0)/arr.length;
+        }
+        let vx = variance(sx), vy = variance(sy), vz = variance(sz);
+        let chosenRaw = (vx > vy && vx > vz) ? sx : ((vy > vx && vy > vz) ? sy : sz);
+
+        // 3. Chosen smoothing & Min/Max Threshold
+        let fc = null;
+        let chosen = chosenRaw.map(v => { fc = (fc===null)? v : (0.2*v)+(0.8*fc); return fc; });
+        let rMin = Math.min(...chosen), rMax = Math.max(...chosen);
+        let thresh25 = rMin + 0.25 * (rMax - rMin);
+
+        // 4. Catch Detection
+        let isBelow = false, tempMin = Infinity, tempMinTime = 0, catches = [];
+        for(let i=0; i<chosen.length; i++) {
+            let v = chosen[i], t = slice[i].t;
+            if (v < thresh25) {
+                if (!isBelow) { isBelow = true; tempMin = v; tempMinTime = t; }
+                else if (v < tempMin) { tempMin = v; tempMinTime = t; }
+            } else if (isBelow) {
+                isBelow = false;
+                catches.push(tempMinTime);
+            }
+        }
+
+        // 5. Normalization & Averaging
+        let strokes100 = [];
+        for (let i=0; i<catches.length-1; i++) {
+            if (catches[i+1] - catches[i] < 0.8) continue; // skip impossible rapid strokes
+            
+            // Extract the slice of 'chosen' array between catches
+            let strokeData = [];
+            for (let j=0; j<slice.length; j++) {
+                if (slice[j].t >= catches[i] && slice[j].t <= catches[i+1]) {
+                    strokeData.push(chosen[j]);
+                }
+            }
+            if (strokeData.length < 10) continue;
+            
+            // Linear Interpolation to 100 points
+            let norm = [];
+            let L = strokeData.length;
+            for(let k=0; k<100; k++) {
+                let exact = (k/99) * (L-1);
+                let idx1 = Math.floor(exact), idx2 = Math.ceil(exact);
+                if (idx1 === idx2) norm.push(strokeData[idx1]);
+                else norm.push(strokeData[idx1]*(1 - (exact-idx1)) + strokeData[idx2]*(exact-idx1));
+            }
+            strokes100.push(norm);
+        }
+
+        if (strokes100.length === 0) return drawStrokeProfile([]);
+
+        // Average the normalized strokes
+        let avgStroke = new Array(100).fill(0);
+        strokes100.forEach(s => { for(let i=0; i<100; i++) avgStroke[i] += s[i]; });
+        avgStroke = avgStroke.map(v => v / strokes100.length);
+
+        drawStrokeProfile(avgStroke);
+    }
+
+    function drawStrokeProfile(avgStrokeData) {
+        if (strokeProfileChart) strokeProfileChart.destroy();
+        
+        const ctx = document.getElementById('strokeProfileChart').getContext('2d');
+        strokeProfileChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array.from({length: 100}, (_, i) => i + '%'),
+                datasets: [{
+                    label: 'Avg Stroke Force (Accel)',
+                    data: avgStrokeData,
+                    borderColor: '#8b5cf6',
+                    backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                    borderWidth: 3,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                scales: { x: { title: { display: true, text: 'Stroke Cycle % (Catch to Catch)' } } }
+            }
+        });
+    }
+</script>
+</body>
+</html>

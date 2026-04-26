@@ -68,8 +68,4 @@ Your RowData structure does not contain variables for pitch, roll, or accelerati
 
 
 # TODO
-
-- add new advacned.py stroke deteciotn into the main.cpp code.
-- investigate why the pace was laggin a bit? are we smooting it? what is the pace based on? a rolling avg?
-- chnage the movement rules.  should only show strokrate if gps says we are moving. otherwise it should be 0. Dont make it too complex
-- Make a debug and error logger that catches all problems and writes them ot sd. Last time we stopped recording after about 1 lake run. Maybe see if it alwyas stoppes after the same time. Is there something overflowing?
+- show coahing info like powercurve, acceleartion data or how much the boat is moving below the body on the recovery
