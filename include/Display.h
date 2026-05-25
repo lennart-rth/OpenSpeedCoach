@@ -19,7 +19,7 @@ private:
     String lastDispStatus = "";
 
 public:
-    bool useClassicUI = false; 
+    bool useClassicUI = true; 
 
     DisplayManager();
     void init();

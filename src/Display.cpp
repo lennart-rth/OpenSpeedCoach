@@ -335,7 +335,10 @@ void DisplayManager::updateMainScreen(float avgSpeed, float dist, float minutes,
             display.setTextSize(3); display.setCursor(10, 50); 
             if (avgSpeed > 0.5) {
                 display.print(splitMin); display.print(":");
-                if(splitSec < 10) display.print("0"); display.print(splitSec);
+                if (splitSec < 10) {
+                    display.print("0");
+                }
+                display.print(splitSec);
             } else { display.print("--:--"); }
         } while (display.nextPage());
         lastDispSplitMin = splitMin; lastDispSplitSec = splitSec;

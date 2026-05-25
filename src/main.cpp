@@ -5,6 +5,7 @@
 #include <malloc.h>
 
 #include "DataTypes.h"
+#include "BLEController.h"
 #include "Logger.h"
 #include "Display.h"
 #include "StrokeDetection.h"
@@ -17,6 +18,7 @@ DisplayManager displayUI;
 StrokeDetection strokeDet;
 PaceEstimator paceEstimator;
 CurveAnalyzer curveAnalyzer;
+BLEController bleController;
 
 Adafruit_MPU6050 mpu;
 TwoWire MyWire = TwoWire(NRF_TWIM1, NRF_TWIS1, SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1_IRQn, MPU_SDA, MPU_SCL);
@@ -37,12 +39,27 @@ volatile uint32_t lastSensorTaskHeartbeat = 0;
 // --- GLOBAL STATE ---
 bool mpuOK = false;
 bool fixFound = false;
+bool gpsCommEverSeen = false;
+
+volatile uint32_t lastGpsByteMillis = 0;
+volatile uint32_t lastGpsSentenceMillis = 0;
 
 double startLat = 0, startLon = 0, lastLat = 0, lastLon = 0;
 double totalDist = 0.0;
 unsigned long startTime = 0, lastLogTime = 0, lastDisplayTime = 0;
 
 TaskHandle_t SensorTaskHandle;
+
+void pollGpsInput() {
+    while (Serial1.available() > 0) {
+        gpsCommEverSeen = true;
+        lastGpsByteMillis = millis();
+
+        if (gps.encode(Serial1.read())) {
+            lastGpsSentenceMillis = millis();
+        }
+    }
+}
 
 // --- RTOS SENSOR THREAD ---
 void SensorTask(void *pvParameters) {
@@ -55,29 +72,27 @@ void SensorTask(void *pvParameters) {
         lastSensorTaskHeartbeat = currentMillis;
         uint8_t bank = activeBank;
 
-        while (Serial1.available() > 0) {
-            if (gps.encode(Serial1.read())) {
-                if (gps.location.isUpdated() && fixFound) {
-                    double distStep = gps.distanceBetween(gps.location.lat(), gps.location.lng(), lastLat, lastLon);
-                    if (distStep > DEADRECONING_DISTANCE_THRESHOLD) {
-                        totalDist += distStep;
-                        lastLat = gps.location.lat(); lastLon = gps.location.lng();
-                    }
+        pollGpsInput();
 
-                    if (gpsCount[bank] < MAX_GPS_SAMPLES) {
-                        int idx = gpsCount[bank];
-                        gpsBuffer[bank][idx].timestamp = currentMillis;
-                        gpsBuffer[bank][idx].lat = gps.location.lat();
-                        gpsBuffer[bank][idx].lon = gps.location.lng();
-                        gpsBuffer[bank][idx].speed = gps.speed.kmph();
-                        gpsBuffer[bank][idx].distToStart = gps.distanceBetween(gps.location.lat(), gps.location.lng(), startLat, startLon);
-                        gpsBuffer[bank][idx].sats = gps.satellites.value();
-                        gpsBuffer[bank][idx].hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9;
-                        gpsBuffer[bank][idx].altitude = gps.altitude.isValid() ? gps.altitude.meters() : 0.0;
-                        gpsBuffer[bank][idx].course = gps.course.isValid() ? gps.course.deg() : 0.0;
-                        gpsCount[bank]++;
-                    }
-                }
+        if (gps.location.isUpdated() && fixFound) {
+            double distStep = gps.distanceBetween(gps.location.lat(), gps.location.lng(), lastLat, lastLon);
+            if (distStep > DEADRECONING_DISTANCE_THRESHOLD) {
+                totalDist += distStep;
+                lastLat = gps.location.lat(); lastLon = gps.location.lng();
+            }
+
+            if (gpsCount[bank] < MAX_GPS_SAMPLES) {
+                int idx = gpsCount[bank];
+                gpsBuffer[bank][idx].timestamp = currentMillis;
+                gpsBuffer[bank][idx].lat = gps.location.lat();
+                gpsBuffer[bank][idx].lon = gps.location.lng();
+                gpsBuffer[bank][idx].speed = gps.speed.kmph();
+                gpsBuffer[bank][idx].distToStart = gps.distanceBetween(gps.location.lat(), gps.location.lng(), startLat, startLon);
+                gpsBuffer[bank][idx].sats = gps.satellites.value();
+                gpsBuffer[bank][idx].hdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9;
+                gpsBuffer[bank][idx].altitude = gps.altitude.isValid() ? gps.altitude.meters() : 0.0;
+                gpsBuffer[bank][idx].course = gps.course.isValid() ? gps.course.deg() : 0.0;
+                gpsCount[bank]++;
             }
         }
 
@@ -131,6 +146,8 @@ void setup() {
     Serial1.setPins(GPS_RX_PIN, GPS_TX_PIN);
     Serial1.begin(9600);
 
+    bleController.beginBootMode();
+
     uint32_t bootTime = millis();
     uint32_t lastScreenUpdate = millis();
 
@@ -140,6 +157,8 @@ void setup() {
     bool readyToRow = false;
     
     while (!readyToRow) {
+        pollGpsInput();
+        bleController.poll();
         
         // 1. Check GPS Fix
         if (!fixFound) {
@@ -164,8 +183,9 @@ void setup() {
 
         uint32_t currentMillis = millis();
         uint32_t elapsedSec = (currentMillis - bootTime) / 1000;
+        bool gpsUartAlive = gpsCommEverSeen || (currentMillis - bootTime < 5000);
 
-        if (fixFound) {
+        if (fixFound && !bleController.isBootActive()) {
             readyToRow = true;
             break;
         }
@@ -173,11 +193,28 @@ void setup() {
         if (currentMillis - lastScreenUpdate >= 10000) {
             lastScreenUpdate = currentMillis;
             
-            String statusMsg = fixFound ? "GPS Locked. Starting..." : "Waiting for Fix...";
+            String statusMsg;
+            if (bleController.isConnected()) {
+                statusMsg = "BLE connected";
+            } else if (bleController.isBootActive()) {
+                statusMsg = "BLE waiting";
+            } else if (!gpsUartAlive) {
+                statusMsg = "No GPS UART data - check wiring/baud";
+            } else if (lastGpsSentenceMillis == 0) {
+                statusMsg = "GPS data seen, waiting for fix";
+            } else if (fixFound) {
+                statusMsg = "GPS Locked. Starting...";
+            } else {
+                statusMsg = "Waiting for Fix...";
+            }
             displayUI.drawSetupScreen(sdOK, mpuOK, gps.satellites.value(), statusMsg, elapsedSec);
         }
         
         delay(25); 
+    }
+
+    if (bleController.isBootActive()) {
+        bleController.shutdown();
     }
 
     displayUI.drawBackground();
