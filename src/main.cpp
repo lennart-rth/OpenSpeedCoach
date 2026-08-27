@@ -5,7 +5,6 @@
 #include <malloc.h>
 
 #include "DataTypes.h"
-#include "BLEController.h"
 #include "Logger.h"
 #include "Display.h"
 #include "StrokeDetection.h"
@@ -18,7 +17,6 @@ DisplayManager displayUI;
 StrokeDetection strokeDet;
 PaceEstimator paceEstimator;
 CurveAnalyzer curveAnalyzer;
-BLEController bleController;
 
 Adafruit_MPU6050 mpu;
 TwoWire MyWire = TwoWire(NRF_TWIM1, NRF_TWIS1, SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1_IRQn, MPU_SDA, MPU_SCL);
@@ -146,8 +144,6 @@ void setup() {
     Serial1.setPins(GPS_RX_PIN, GPS_TX_PIN);
     Serial1.begin(9600);
 
-    bleController.beginBootMode();
-
     uint32_t bootTime = millis();
     uint32_t lastScreenUpdate = millis();
 
@@ -158,7 +154,6 @@ void setup() {
     
     while (!readyToRow) {
         pollGpsInput();
-        bleController.poll();
         
         // 1. Check GPS Fix
         if (!fixFound) {
@@ -185,7 +180,7 @@ void setup() {
         uint32_t elapsedSec = (currentMillis - bootTime) / 1000;
         bool gpsUartAlive = gpsCommEverSeen || (currentMillis - bootTime < 5000);
 
-        if (fixFound && !bleController.isBootActive()) {
+        if (fixFound) {
             readyToRow = true;
             break;
         }
@@ -194,11 +189,7 @@ void setup() {
             lastScreenUpdate = currentMillis;
             
             String statusMsg;
-            if (bleController.isConnected()) {
-                statusMsg = "BLE connected";
-            } else if (bleController.isBootActive()) {
-                statusMsg = "BLE waiting";
-            } else if (!gpsUartAlive) {
+            if (!gpsUartAlive) {
                 statusMsg = "No GPS UART data - check wiring/baud";
             } else if (lastGpsSentenceMillis == 0) {
                 statusMsg = "GPS data seen, waiting for fix";
@@ -211,10 +202,6 @@ void setup() {
         }
         
         delay(25); 
-    }
-
-    if (bleController.isBootActive()) {
-        bleController.shutdown();
     }
 
     displayUI.drawBackground();
